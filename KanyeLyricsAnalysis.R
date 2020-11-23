@@ -73,21 +73,15 @@ while (i > 0) {
 
 
 # Filtering to get urls only for tracks on which Kanye West is the primary artist
-filtered_track_lyric_urls <- c()
-filtered_track_lyric_titles <- c()
-index <- c()
 
-
-for (i in 1:length(track_lyric_urls)) {
-  if (track_lyric_urls[[i]]$primary_artist$name == "Kanye West") {
-    filtered_track_lyric_urls <- append(filtered_track_lyric_urls, track_lyric_urls[[i]]$url)
-    filtered_track_lyric_titles <- append(filtered_track_lyric_titles, track_lyric_urls[[i]]$title)
-    
-    index <- append(index, i)
+select_genius_tracks <- function(track_lyric_urls) {
+  if (track_lyric_urls$primary_artist$name == "Kanye West") {
+    filtered_track_lyric_urls <- append(filtered_track_lyric_urls, track_lyric_urls$url)
+    filtered_track_lyric_titles <- append(filtered_track_lyric_titles, track_lyric_urls$title)
     test <- data.frame(filtered_track_lyric_titles, filtered_track_lyric_urls)
-    return(test)
   }
 }
+test <- purrr::map_df(track_lyric_urls, select_genius_tracks)
 
 test$filtered_track_lyric_titles <- as.character(test$filtered_track_lyric_titles)
 test <- test %>% distinct(.keep_all = T)
@@ -150,6 +144,9 @@ scrape <- function(x) {
 # scrape lyrics based on genius url
 kanye_lyrics$lyric_text <- purrr::map(kanye_lyrics$filtered_track_lyric_urls, scrape) # rewrite with purrr later
 kanye_lyrics$lyric_text <- as.character(kanye_lyrics$lyric_text)
+# kanye_lyrics %>% select(track_name, album_name, lyric_text, 
+#                         key_mode, danceability, energy, valence, tempo) %>%
+#   readr::write_csv("/Users/dunk/Classes/NMC 245/kanye_unfiltered_lyrics.csv")
 # Function for Cleaning and standardizing lyrics
 
 # Consider readding tolower() for better analysis
