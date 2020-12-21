@@ -1,0 +1,933 @@
+---
+title: "Sentiment Analysis of Kanye's Lyricism"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::html_docco:
+    self_contained: true # Other options are downcute, material, readthedown, html_clean, html_docco, lockdown, https://github.com/juba/rmdformats
+    thumbnails: false
+    lightbox: true
+    gallery: false
+    highlight: kate
+    number_sections: false
+---
+---
+
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+library(spotifyr)
+library(plyr)
+library(tidyverse)
+library(httr)
+library(rvest)
+library(stringr)
+library(ggthemes)
+library(tidytext)
+library(wordcloud)
+library(ggridges)
+library(wesanderson)
+library(yarrr)
+library(knitr)
+library(kableExtra)
+library(DT)
+library(radarchart)
+
+## Global options
+options(max.print="75")
+opts_chunk$set(echo=FALSE,
+	             cache=TRUE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE)
+opts_knit$set(width=75)
+# set up Spotify client ID and client secret
+Sys.setenv(SPOTIFY_CLIENT_ID = '383cfac3d8434244a38c4e279a04ce47')
+Sys.setenv(SPOTIFY_CLIENT_SECRET = '486c6f539f8e45a2b82f03a30cfed26f')
+token <- "QZWrzUmE0Kg2QvTjynbk2gqnIV9S_FaE_Cax36z54N_FcvDgZHGHB2sngC5-JYiD"
+
+# Super sick site here https://www.color-hex.com/color-palette/90639
+# Can also get them from adobe color
+colors_cd <- c("#411218", "#e8982e", "#8087b5", "#ddb890")
+colors_lr <- c("#633119", "#7398aa", "#c3ab14", "#373123", "#b18662")
+colors_grad <- c("#221e1f", "#ffffff", "#b9b353", "#853082", "#b25186")
+colors_808s <- c("#de6656", "#6e4b34", "#a89c9a", "#b72124", "#c2cece")
+colors_mbdtf <- c("#EC2440", "#BD2517", "#454F58", "#C9A48B", "#845242")
+colors_yeez <- c("#D8D9DE", "#FDFEFF", "#D9F7F7", "#F9FCDF", "#F20505")
+colors_tlop <- c("#7acec2", "#e6dfcc", "#412517", "#a75f3b", "#f58b57")
+colors_ye <- c("#172940", "#7A8CA4", "#08F42A", "#11DA2D", "#F2EEE5")
+kanyealbums <- c("ye", "The Life Of Pablo", "Yeezus", "Watch The Throne", "My Beautiful Dark Twisted Fantasy", "808s & Heartbreak", "Graduation", "Late Registration", "The College Dropout"
+)
+```
+
+#Section 1: Getting the Data with SpotifyR and Genius
+
+After getting your spotify client id and secret from spotify ([link here](https://developer.spotify.com/documentation/general/guides/app-settings/)), you can get started using spotifyR, which you now have to install from [github](https://github.com/charlie86/spotifyr).
+
+I will focus on Kanye and his lyricism preceding the JESUS IS KING album in this sentiment analysis, so the first thing I do is filter out all albums he features on other than Watch the Throne where he is integral enough to include, although I later filter the album down to only songs on which he features.
+
+```{r echo = T, eval = F}
+kanye <- get_artist_audio_features('kanye west')
+
+kanyealbums <- unique(kanye$album_name)
+kanyealbums <- kanyealbums[-c(11,12,6,1,2)]
+
+kanye <- kanye %>% dplyr::filter(album_name %in% kanyealbums)
+```
+
+Next I obtain the data from Genius, which is really tough because just searching Kanye results in nearly 3000 songs on which he has featured (a lot of which are duplicates).
+
+```{r echo = T, eval = F}
+genius_get_artists <- function(artist_name, n_results = 10) {
+  baseURL <- 'https://api.genius.com/search?q='
+  requestURL <- paste0(baseURL, gsub(' ', '%20', artist_name),
+                       '&per_page=', n_results,
+                       '&access_token=', token)
+
+  res <- GET(requestURL) %>% content %>% .$response %>% .$hits
+
+  map_df(1:length(res), function(x) {
+    tmp <- res[[x]]$result$primary_artist
+    list(
+      artist_id = tmp$id,
+      artist_name = tmp$name
+    )
+  }) %>% unique
+}
+
+genius_artists <- genius_get_artists('kanye west')
+```
+
+Next I get the track URLs with a while loop, which is not super well written, this was before I discovered purrr.
+
+```{r echo = T, eval = F}
+baseURL <- 'https://api.genius.com/artists/'
+requestURL <- paste0(baseURL, genius_artists$artist_id[1], '/songs')
+
+track_lyric_urls <- list()
+i <- 1
+while (i > 0) {
+  tmp <- GET(requestURL, query = list(access_token = token, per_page = 50, page = i)) %>% content %>% .$response
+  track_lyric_urls <- c(track_lyric_urls, tmp$songs)
+  if (!is.null(tmp$next_page)) {
+    i <- tmp$next_page
+  } else {
+    break
+  }
+}
+```
+
+Now we filter for only tracks on which Kanye is the primary artist and then do some really dirty cleaning since Genius uses a different capitalization format and type of appostrophe than R itself uses.
+
+```{r echo = T, eval = F}
+filtered_track_lyric_urls <- c()
+filtered_track_lyric_titles <- c()
+select_genius_tracks <- function(track_lyric_urls) {
+  if (track_lyric_urls$primary_artist$name == "Kanye West") {
+    filtered_track_lyric_urls <- append(filtered_track_lyric_urls, track_lyric_urls$url)
+    filtered_track_lyric_titles <- append(filtered_track_lyric_titles, track_lyric_urls$title)
+    test <- data.frame(filtered_track_lyric_titles, filtered_track_lyric_urls)
+  }
+}
+test <- purrr::map_df(track_lyric_urls, select_genius_tracks)
+
+test$filtered_track_lyric_titles <- as.character(test$filtered_track_lyric_titles)
+test <- test %>% distinct(.keep_all = T) # Doesn't actually do anything they're all distinct
+test$filtered_track_lyric_titles[702] <- "Through The Wire"
+test$filtered_track_lyric_titles[763] <- "We Don't Care"
+test$filtered_track_lyric_titles[337] <- "I'll Fly Away"
+test$filtered_track_lyric_titles[628] <- "Slow Jamz"
+test$filtered_track_lyric_titles[596] <- "School Spirit Skit 1"
+test$filtered_track_lyric_titles[597] <- "School Spirit Skit 2"
+test$filtered_track_lyric_titles[417] <- "Lil Jimmy Skit"
+test$filtered_track_lyric_titles[617] <- "Skit #1 (Kanye West/Late Registration)"
+test$filtered_track_lyric_titles[618] <- "Skit #2 (Kanye West/Late Registration)"
+test$filtered_track_lyric_titles[619] <- "Skit #3 (Kanye West/Late Registration)"
+test$filtered_track_lyric_titles[620] <- "Skit #4 (Kanye West/Late Registration)"
+test$filtered_track_lyric_titles[721] <- "Touch The Sky"
+test$filtered_track_lyric_titles[291] <- "Heard 'Em Say"
+test$filtered_track_lyric_titles[159] <- "Diamonds From Sierra Leone - Remix"
+test$filtered_track_lyric_titles[156] <- "Diamonds From Sierra Leone - Bonus Track"
+test$filtered_track_lyric_titles[111] <- "Can't Tell Me Nothing"
+test$filtered_track_lyric_titles[43] <- "All Of The Lights"
+test$filtered_track_lyric_titles[44] <- "All Of The Lights (Interlude)"
+test$filtered_track_lyric_titles[152] <- "Devil In A New Dress"
+test$filtered_track_lyric_titles[301] <- "Hell Of A Life"
+test$filtered_track_lyric_titles[427] <- "Lost In The World"
+test$filtered_track_lyric_titles[782] <- "Who Will Survive In America	"
+test$filtered_track_lyric_titles[599] <- "See You In My Nightmares"
+test$filtered_track_lyric_titles[91] <- "Blood On The Leaves"
+test$filtered_track_lyric_titles[328] <- "I Am A God"
+test$filtered_track_lyric_titles[344] <- "I'm In It"
+test$filtered_track_lyric_titles[215] <- "Father Stretch My Hands Pt. 1"
+test$filtered_track_lyric_titles[230] <- "Frank's Track"
+test$filtered_track_lyric_titles[481] <- "No More Parties In LA"
+test$filtered_track_lyric_titles[790] <- "Wouldn't Leave"
+```
+
+Finally we join the data.
+
+```{r echo = T, eval = F}
+kanye_lyric_titles <- test$filtered_track_lyric_titles %>% str_to_title() %>% as_tibble() %>%
+  right_join(kanye, by = c("value" = "track_name")) %>% distinct(value, .keep_all = T)
+
+kanye_lyrics <- left_join(kanye_lyric_titles, test, by = c("value" = "filtered_track_lyric_titles")) %>% distinct(value, .keep_all = T) %>%
+  dplyr::rename(track_name = value) %>% arrange(album_release_date) %>% relocate(filtered_track_lyric_urls, .after = track_name) %>%
+  drop_na(filtered_track_lyric_urls)
+kanye_lyrics$filtered_track_lyric_urls <- as.character(kanye_lyrics$filtered_track_lyric_urls)
+```
+
+Now we can easily scrape the lyrics from Genius' site using rvest
+
+```{r echo = T, eval = F}
+kanye_lyrics$lyric_text <- rep(NA, nrow(kanye_lyrics))
+
+# Webscraping lyrics using rvest after making a NA column
+kanye_lyrics$filtered_track_lyric_urls <- as.character(kanye_lyrics$filtered_track_lyric_urls)
+kanye_lyrics$lyric_text <- rep(NA, nrow(kanye_lyrics))
+
+# Function to scrape lyrics
+scrape <- function(x) {
+  read_html(x) %>%
+    html_nodes(".lyrics p") %>%
+    html_text()
+}
+
+# scrape lyrics based on genius url
+kanye_lyrics$lyric_text <- purrr::map(kanye_lyrics$filtered_track_lyric_urls, scrape) # This is around when I discovered purrr
+kanye_lyrics$lyric_text <- as.character(kanye_lyrics$lyric_text)
+```
+
+
+# Data Cleaning
+
+If you've ever been on Genius' site before you know there's a lot of extraneous text which needs to be cleaned up.
+
+```{r eval = F, echo = T}
+kanye_lyrics <- kanye_lyrics %>% mutate(lyric_text = gsub("([a-z])([A-Z])", "\\1 \\2", lyric_text)) %>%
+                                          mutate(lyric_text = gsub("\n", " ", lyric_text)) %>%
+                                        mutate(lyric_text = gsub("\\[.*?\\]", " ", lyric_text)) %>%
+                                        mutate(lyric_text = gsub(" {2,}", " ", lyric_text))
+
+kanye_lyrics_csv <- kanye_lyrics %>% select(track_name, lyric_text)
+# readr::write_csv(kanye_lyrics_csv, "/Users/dunk/Github/SpotifyStats/KanyeFinalAnalysis/kanye-lyrics.csv") # Csv write of just track and lyrics
+```
+
+Separately Genius data then joining the dataframes
+
+```{r eval = F, echo = T}
+genius_data <- data.frame(track_name = kanye_lyrics$track_name, lyrics = kanye_lyrics$lyric_text)
+genius_data$track_name <- as.character(genius_data$track_name)
+genius_data$lyrics <- as.character(genius_data$lyrics)
+
+spotify_genius <- full_join(genius_data, kanye, by = "track_name") %>% 
+  distinct(track_name, .keep_all = T) %>%
+  drop_na(lyrics) %>%
+  relocate(album_name, .after = track_name)
+```
+
+Ordering the albums
+
+```{r eval = F, echo = T}
+ordered_albums <- factor(spotify_genius$album_name)
+ordered_albums <- factor(ordered_albums,levels(ordered_albums)[c(5,3,2,1,4,8,6,7)])
+spotify_genius$ordered_albums <- ordered_albums
+```
+
+```{r echo = F}
+# options("digits" = 3)
+# readr::write_rds(spotify_genius, "/Users/dunk/Github/SpotifyStats/KanyeFinalAnalysis/main_data.csv")
+spotify_genius <- readr::read_rds("/Users/dunk/Github/SpotifyStats/KanyeFinalAnalysis/main_data.csv")
+```
+
+# Plotting the Data
+
+First, let's take a look at valence:
+
+```{r fig.width = 14}
+spotify_genius %>% ggplot(aes(x = valence, y = ordered_albums, fill = ..x..)) +
+  geom_density_ridges_gradient(scale = 0.9) +
+  scale_fill_gradient(low = "white", high = "deeppink") +
+  theme_fivethirtyeight() +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  xlim(0,1) +
+  ggtitle("Kanye's Valence By Album: A Clear Path of Misery") +
+  theme(legend.position = "none")
+```
+
+Filler Text 1.
+
+```{r, fig.width = 14}
+colors_cd <- c("#411218", "#e8982e", "#8087b5", "#ddb890",
+               "#411218", "#e8982e", "#8087b5", "#ddb890",
+               "#411218", "#e8982e", "#8087b5", "#ddb890",
+               "#411218", "#e8982e", "#8087b5", "#ddb890",
+               "#411218", "#e8982e", "#8087b5", "#ddb890",
+               "#411218")
+spotify_genius %>% 
+  dplyr::filter(album_name == "The College Dropout") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_cd) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("The College Dropout: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+Filler Text 2.
+
+```{r, fig.width = 14}
+colors_lr <- c("#633119", "#7398aa", "#c3ab14", "#373123", "#b18662",
+               "#633119", "#7398aa", "#c3ab14", "#373123", "#b18662",
+               "#633119", "#7398aa", "#c3ab14", "#373123", "#b18662",
+               "#633119", "#7398aa", "#c3ab14", "#373123", "#b18662",
+               "#633119", "#7398aa")
+spotify_genius %>% 
+  dplyr::filter(album_name == "Late Registration") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_lr) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("Late Registration: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+Filler Text 3.
+
+```{r, fig.width = 14}
+colors_grad <- c("#221e1f", "#ffffff", "#b9b353", "#853082", "#b25186",
+                 "#221e1f", "#ffffff", "#b9b353", "#853082", "#b25186",
+                 "#221e1f", "#ffffff", "#b9b353", "#853082")
+spotify_genius %>% 
+  dplyr::filter(album_name == "Graduation") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_grad) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("Graduation: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+Filler Text 4.
+
+```{r, fig.width = 14}
+colors_808s <- c("#de6656", "#6e4b34", "#a89c9a", "#b72124", "#c2cece",
+                 "#de6656", "#6e4b34", "#a89c9a", "#b72124", "#c2cece",
+                 "#de6656", "#6e4b34")
+spotify_genius %>% 
+  dplyr::filter(album_name == "808s & Heartbreak") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_808s) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("808s & Heartbreak: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+Filler Text 5.
+
+```{r, fig.width = 14}
+colors_mbdtf <- c("#EC2440", "#BD2517", "#454F58", "#C9A48B", "#845242",
+                  "#EC2440", "#BD2517", "#454F58", "#C9A48B", "#845242",
+                  "#EC2440", "#EC2440")
+spotify_genius %>% 
+  dplyr::filter(album_name == "My Beautiful Dark Twisted Fantasy") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_mbdtf) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("My Beautiful Dark Twisted Fantasy: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+
+Filler Text 6.
+
+```{r, fig.width = 14}
+colors_yeez <- c("#D8D9DE", "#FDFEFF", "#D9F7F7", "#F9FCDF", "#F20505",
+                 "#D8D9DE", "#FDFEFF", "#D9F7F7", "#F9FCDF", "#F20505")
+spotify_genius %>% 
+  dplyr::filter(album_name == "Yeezus") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_yeez) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("Yeezus: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+Filler Text 7.
+
+```{r, fig.width = 14}
+colors_tlop <- c("#7acec2", "#e6dfcc", "#412517", "#f58b57", "#f58b57",
+                 "#7acec2", "#f58b57", "#412517", "#a75f3b", "#f58b57",
+                 "#f58b57", "#e6dfcc", "#412517", "#a75f3b", "#f58b57",
+                 "#412517", "#e6dfcc", "#412517", "#a75f3b", "#f58b57")
+spotify_genius %>% 
+  dplyr::filter(album_name == "The Life Of Pablo") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_tlop) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("The Life Of Pablo: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+Filler Text 8.
+
+```{r, fig.width = 14}
+colors_ye <- c("#172940", "#7A8CA4", "#172940", "#11DA2D", "#F2EEE5",
+               "#7A8CA4", "#7A8CA4")
+spotify_genius %>% 
+  dplyr::filter(album_name == "ye") %>%
+  ggplot(aes(x = valence, y = energy)) +
+  geom_label(aes(label = track_name), fill = colors_ye) +
+  geom_vline(xintercept = 0.5) +
+  geom_hline(yintercept = 0.5) +
+  annotate(geom = "text", label = "Happy", x = 0.9, y = 0.9) +
+  annotate(geom = "text", label = "Angry", x = 0.1, y = 0.9) +
+  annotate(geom = "text", label = "Calm", x = 0.9, y = 0.1) +
+  annotate(geom = "text", label = "Sad", x = 0.1, y = 0.1) +
+  scale_fill_gradient(low = "white", high = "maroon3") +
+  theme_fivethirtyeight() +
+  labs(x = "Valence (Happiness)", y = "Energy", color = "Album", alpha = "Tempo") + scale_alpha(guide = "none") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  ggtitle("ye: Kanye's Energy and Valence") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5))
+```
+
+A couple tables here for numerical effect.
+
+```{r}
+# table: album by mean valence
+spotify_genius %>%
+  dplyr::group_by(factor(album_name, levels = c(kanyealbums))) %>%
+  dplyr::summarise(round(mean(valence), 4)) %>%
+  arrange(desc(`factor(album_name, levels = c(kanyealbums))`)) %>%
+  dplyr::rename(Album = `factor(album_name, levels = c(kanyealbums))`, `Mean Valence` = `round(mean(valence), 4)`) %>%
+  datatable() %>%
+  formatStyle(target = "row",
+              columns = c("Album"),
+              backgroundColor = styleEqual(c("The College Dropout", "Late Registration",
+                                             "Graduation", "808s & Heartbreak",
+                                             "My Beautiful Dark Twisted Fantasy", "Yeezus",
+                                             "The Life Of Pablo", "ye"),
+                c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4")))
+```
+
+Let's check out all the songs organized by valence
+
+```{r}
+# Songs organized by valence
+spotify_genius %>%
+  select(track_name, album_name, valence) %>%
+  arrange(-valence) %>%
+  dplyr::rename(Album = album_name,
+         Track = track_name,
+         Valence = valence) %>%
+  dplyr::relocate(Album, .before = Track) %>%
+  datatable() %>%
+  formatStyle(target = "row",
+              columns = c("Album"),
+              backgroundColor = styleEqual(c("The College Dropout", "Late Registration",
+                                             "Graduation", "808s & Heartbreak",
+                                             "My Beautiful Dark Twisted Fantasy", "Yeezus",
+                                             "The Life Of Pablo", "ye"),
+                c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4")))
+```
+
+Now a plot of valence, danceability, and energy, vs. album year.
+
+```{r}
+pirateplot(valence + danceability + energy ~ album_release_year, spotify_genius,
+           pal = c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4"),
+           xlab = "album", ylab = "sonic score",
+           theme = 0, point.o = 0.7, avg.line.o = 1, jitter.val = .05,
+           bty = "n", cex.axis = 0.6, xaxt = "n")
+axis(1, cex.axis = 0.6, lwd = 0)
+legend("topright", c("1: College Dropout", "2: Late Registration",
+                     "3: Graduation", "4: 808s and Heartbreaks", "5: My Beautiful Dark Twisted Fantasy",
+                     "6: Yeezus", "7: The Life Of Pablo", "8: ye"), bty = "n", cex = 0.6)
+```
+
+Sonic Score Table.
+
+```{r}
+spotify_genius %>%
+  dplyr::mutate(sonic_score = valence + danceability + energy) %>%
+  select(album_name, track_name, sonic_score) %>%
+  arrange(desc(sonic_score)) %>%
+  dplyr::group_by(album_name) %>%
+  dplyr::rename(Album = album_name, `Sonic Score` = sonic_score, Track = track_name) %>%
+  datatable() %>%
+  formatStyle(target = "row",
+    columns = c("Album"),
+              backgroundColor = styleEqual(c("The College Dropout", "Late Registration",
+                                             "Graduation", "808s & Heartbreak",
+                                             "My Beautiful Dark Twisted Fantasy", "Yeezus",
+                                             "The Life Of Pablo", "ye"),
+                c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4")))
+```
+
+Another table.
+
+```{r}
+spotify_genius %>%
+  dplyr::group_by(album_name) %>%
+  dplyr::summarise(Danceability = mean(danceability),
+                   Energy = mean(energy),
+                   Tempo = mean(tempo),
+                   Liveness = mean(liveness),
+                   Instrumentalness = mean(instrumentalness),
+                   Loudness = mean(loudness),
+                   Acousticness = mean(acousticness),
+                   Valence = mean(valence),
+                   Duration = mean(duration_ms)) %>%
+  dplyr::rename(Album = album_name) %>%
+  datatable() %>%
+  formatStyle(target = "row",
+              columns = c("Album"),
+              backgroundColor = styleEqual(c("The College Dropout", "Late Registration",
+                                             "Graduation", "808s & Heartbreak",
+                                             "My Beautiful Dark Twisted Fantasy", "Yeezus",
+                                             "The Life Of Pablo", "ye"),
+                c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4")))
+
+```
+
+
+# Sentiment Analysis
+
+```{r echo = T}
+# tokenized and cleaned datasets of lyrics for textual analysis
+tidy_kanye <- spotify_genius %>% unnest_tokens(word, lyrics)
+tidier_kanye <- tidy_kanye %>% anti_join(rbind(stop_words[1], "uh", "yeah", "hey", "baby", "ooh", "wanna", "gonna", "ah", "ahh", "ha", "la", "mmm", "whoa", "haa"))
+tidier_kanye$word[tidier_kanye$word == "don" | tidier_kanye$word == "didn"] <- NA
+tidier_kanye$word[tidier_kanye$word == "ain"] <- NA
+tidier_kanye$word[tidier_kanye$word == "isn"] <- NA
+tidier_kanye$word[tidier_kanye$word == "usin"] <- "using"
+tidier_kanye$word[tidier_kanye$word == "wouldn"] <- "wouldn't"
+tidier_kanye$word[tidier_kanye$word == "couldn"] <- "couldn't"
+tidier_kanye$word[tidier_kanye$word == "shouldn"] <- "shouldn't"
+tidier_kanye$word[tidier_kanye$word == "won"] <- "won't"
+tidier_kanye$word[tidier_kanye$word == "ve" | tidier_kanye$word == "ll"] <- NA
+tidier_kanye$word[tidier_kanye$word == "ileft"] <- "left"
+```
+
+Wordcloud.
+
+```{r}
+word_count <- tidier_kanye %>%
+  dplyr::count(word, sort = TRUE) %>%
+  dplyr::mutate(word = reorder(word, n)) %>%
+  dplyr::ungroup()
+
+wordcloud(words = word_count$word, freq = word_count$n,
+          max.words=200, random.order=FALSE,
+          colors= c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4"))
+```
+
+How many tracks does the word "kanye" appear in, and how often? Obviously a lot in "I Love Kanye", but surprisingly enough only once in "Wake Up Mr. West", and not even that much overall, I would not be surprised if most artists had similar amounts of self-references throughout their discography.
+
+```{r}
+# how many tracks does the word "kanye" appear in?
+kanye_freq <- tidier_kanye %>%
+  select(track_name, word) %>%
+  dplyr::filter(word == "kanye") %>%
+  dplyr::group_by(track_name) %>%
+  dplyr::summarise(plyr::count(word)) %>%
+  dplyr::rename(Word = x, Count = freq, Track = track_name) %>%
+  dplyr::arrange(desc(Count))
+datatable(kanye_freq) %>%
+  formatStyle(
+  'Word',
+  target = 'row',
+  backgroundColor = styleEqual(c('kanye'), c('lightblue'))
+)
+  # Find an all data table where this can be used
+  # formatStyle(names(kanye_freq),
+  # background = styleColorBar(range(kanye_freq), 'lightblue'),
+  # backgroundSize = '98% 88%',
+  # backgroundRepeat = 'no-repeat',
+  # backgroundPosition = 'center')
+```
+
+Wordcloud for just the album ye, you can see why sentiment analysis would pick this up as deeply depressed/angry/sad.
+
+```{r}
+# wordcloud: make this function work by album later
+word_count_ts <- tidier_kanye %>%
+  dplyr::filter(album_name == "ye") %>%
+  dplyr::count(word, sort = TRUE) %>%
+  mutate(word = reorder(word, n)) %>%
+  ungroup()
+
+wordcloud(words = word_count_ts$word, freq = word_count_ts$n,
+          max.words=25, random.order=FALSE,
+          colors= c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4"))
+```
+
+Wordcloud for 808s & Heartbreak, the issue is clear once again, although this time it could literally just because Kanye says "Amazing" A LOT in the song amazing, in fact he says it 55 times, which is the third most frequent by song out of all of his discography. Coming just after "bam" which isn't sang by him in Famous, and "ey" also in Famous, it can really be argued that it is the largest personal use in his discography.
+
+```{r}
+# library(gt)
+# tidier_kanye %>%
+#   dplyr::group_by(track_name) %>%
+#   dplyr::count(word, sort = T) %>%
+#   gt() %>%
+#   tab_header(
+#     title = "Kanye Word Counts by Track"
+#   ) # FIGURE OUT WHY THIS DOESN'T WORKS
+word_count_ts_2 <- tidier_kanye %>%
+  dplyr::filter(album_name == "808s & Heartbreak") %>%
+  dplyr::count(word, sort = TRUE) %>%
+  mutate(word = reorder(word, n)) %>%
+  ungroup()
+
+wordcloud(words = word_count_ts_2$word, freq = word_count_ts_2$n,
+          max.words=25, random.order=FALSE,
+          colors= c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4"))
+```
+
+
+
+
+Wordcloud for My Beautiful Dark Twisted Fantasy, not much to interpret here there is a lot going on, but if you've heard this album this makes sense.
+
+```{r}
+word_count_rep <- tidier_kanye %>%
+  dplyr::filter(album_name == "My Beautiful Dark Twisted Fantasy") %>%
+  dplyr::count(word, sort = TRUE) %>%
+  mutate(word = reorder(word, n)) %>%
+  ungroup()
+
+wordcloud(words = word_count_rep$word, freq = word_count_rep$n,
+          max.words=25, random.order=FALSE,
+          colors= c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4"))
+```
+
+Lexical diversity is fairly consistently in the middle ranges, although there are some outliers in The Life of Pablo and The College Dropout that should be investigated.
+
+```{r}
+# more cleaning, can be done earlier
+tidier_kanye$album_release_year <- as.character(tidier_kanye$album_release_year)
+tidier_kanye$album_release_year <- as.numeric(substr(tidier_kanye$album_release_year, 1, 4))
+
+tidy_kanye$album_release_year <- as.character(tidy_kanye$album_release_year)
+tidy_kanye$album_release_year <- as.numeric(substr(tidy_kanye$album_release_year, 1, 4))
+
+
+# creating a "lexical diversity" dataset
+lexical_diversity <- tidy_kanye %>% 
+  dplyr::group_by(track_name, album_release_year) %>%
+  dplyr::mutate(lex_div = length(unique(word))/length(word)) %>%
+  select(track_name, lex_div, album_release_year) %>%
+  distinct()
+
+
+# lexical diversity plot
+pirateplot(lex_div ~ album_release_year, lexical_diversity,
+           pal = c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4"),
+           xlab = "album", ylab = "lexical diversity",
+           theme = 0, point.o = 0.5, avg.line.o = 1, jitter.val = .05,
+           bty = "n", cex.axis = 0.6, xaxt = "n")
+axis(1, cex.axis = 0.6, lwd = 0)
+legend("topright", c("1: The College Dropout", "2: Late Registration", "3: Graduation",
+                     "4: 808s & Heartbreak", "5: My Beautiful Dark Twisted Fantasy", "6: Yeezus", "7: The Life of Pablo",
+                     "8: ye"), bty = "n", cex = 0.6)
+```
+
+
+```{r}
+# least lexically diverse tracks
+tidy_kanye %>% dplyr::group_by(track_name, album_name) %>%
+  dplyr::mutate(lex_div = length(unique(word))/length(word)) %>%
+  select(track_name, lex_div, album_name) %>%
+  arrange(lex_div) %>%
+  distinct() %>%
+  dplyr::rename(Album = album_name) %>%
+  datatable() %>%
+  formatStyle(target = "row",
+              columns = c("Album"),
+              backgroundColor = styleEqual(c("The College Dropout", "Late Registration",
+                                             "Graduation", "808s & Heartbreak",
+                                             "My Beautiful Dark Twisted Fantasy", "Yeezus",
+                                             "The Life Of Pablo", "ye"),
+                c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4")))
+```
+
+Now for the real fun, sentiment analysis using NRC, AFINN, and BING, which is surprisingly easy.
+
+```{r echo = T}
+# joining the tokenized, tidied lyric dataset with sentiment lexicons
+kanye_nrc_sub <- tidier_kanye %>%
+  inner_join(get_sentiments("nrc")) %>%
+  dplyr::filter(!sentiment %in% c("positive", "negative"))
+
+kanye_AFINN <- tidier_kanye %>%
+  inner_join(get_sentiments("afinn"))
+
+kanye_bing <- tidier_kanye %>%
+  inner_join(get_sentiments("bing"))
+```
+
+
+Sentiment scores with AFINN, looks like its not a great tool in general given that it got the exact opposite of what it should have - that 808s was his most depressed and lowest point, it would be useful in the future to try to weight instrumental components in this analysis, to try to give context to the data.
+
+```{r}
+# sentiment scores using AFINN
+dim <- kanye_AFINN %>%
+  dplyr::count(album_name)
+kanye_AFINN %>%
+  dplyr::group_by(ordered_albums) %>%
+  dplyr::summarise(sum(value)) %>%
+  dplyr::mutate(scaled = `sum(value)` * 229 / dim$n) %>%
+  ggplot(aes(x = ordered_albums, y = scaled)) +
+  geom_bar(stat = "identity", fill = c("#411218",
+                         "#633119",
+                         "#853082",
+                         "#c2cece",
+                         "#EC2440",
+                         "#D8D9DE",
+                         "#f58b57",
+                         "#7A8CA4")) +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(legend.position="none")
+```
+
+Pyramid Plot of The Life of Pablo
+
+```{r}
+kanye_pyramid <- kanye_bing %>%
+  unique() %>%
+  dplyr::group_by(track_name, sentiment, album_name) %>%
+  dplyr::count(track_name, sentiment)
+
+for(i in 1:24) {
+  if(kanye_pyramid$sentiment[i] == "negative")
+    kanye_pyramid$n[i] <- -kanye_pyramid$n[i]
+}
+
+kanye_pyramid %>%
+  dplyr::mutate(sentiment = str_to_title(sentiment)) %>%
+  dplyr::filter(album_name == "The Life Of Pablo") %>%
+  ggplot(aes(x = track_name, y = n, fill = sentiment)) +
+  geom_bar(subset = .(sentiment == "positive"), stat = "identity") +
+  geom_bar(subset = .(sentiment == "negative"), stat = "identity") +
+  scale_y_continuous() +
+  coord_flip() +
+  ggtitle("The Life Of Pablo Bing Scores") +
+  labs(fill = "Sentiment") +
+  theme_fivethirtyeight() +
+  scale_fill_manual(values = c("#f58b57", "#412517")) +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white"))
+```
+
+
+Radar chart.
+
+```{r}
+sentiment_nrc <- kanye_nrc_sub %>%
+  dplyr::group_by(ordered_albums, sentiment) %>%
+  dplyr::count(ordered_albums, sentiment) %>%
+  select(ordered_albums, sentiment, sentiment_total = n) %>%
+  mutate(sentiment = str_to_title(sentiment))
+
+album_nrc <- kanye_nrc_sub %>%
+  dplyr::count(ordered_albums) %>%
+  select(ordered_albums, album_total = n)
+
+radar_chart <- sentiment_nrc %>%
+  inner_join(album_nrc, by = "ordered_albums") %>%
+  mutate(percent = round((sentiment_total/album_total * 100), 3)) %>%
+  select(-sentiment_total, -album_total) %>%
+  spread(ordered_albums, percent)
+
+radar_chart <- radar_chart[c(2,7,5,8,4,3,1,6), c(1, 7:2)]
+
+# Cool Radar Chart of Spotify Data
+chartJSRadar(radar_chart, polyAlpha = 0.2, lineAlpha = 0.8, maxScale = 25,
+             colMatrix = matrix(c(0, 255, 255, 255, 185, 15, 139, 0, 139,
+                                  255, 0, 0, 201, 167, 198, 0, 0, 0), byrow = F, nrow = 3))
+```
+
+Most common words in song.
+
+```{r}
+text_wordcounts <- tidy_kanye %>% select(track_name, album_name, word)
+text_wordcounts$word <- as.factor(text_wordcounts$word)
+text_wordcounts <- text_wordcounts %>% dplyr::group_by(word) %>% dplyr::summarise(n = n()) %>% ungroup
+
+# Ranking most common words in Kanye Songs
+text_wordcounts %>% dplyr::mutate(word = reorder(word, n)) %>% anti_join(stop_words) %>%
+  dplyr::filter(n > 100) %>%
+  ggplot(aes(word, n, fill = -n)) + 
+  geom_col() + 
+  coord_flip() +
+  scale_fill_distiller(palette = "Blues") +
+  labs(x = "Word", y = "Count", title = "Most Frequent Words in Kanye West's Songs") +
+  geom_text(aes(label = n), hjust = 1.2, color = "white", fontface = "bold") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.title.x = element_text(face = "bold", color = "forestgreen", size = 12),
+        axis.title.y = element_text(face = "bold", color = "forestgreen", size = 12),
+        legend.position = "none")
+```
+
+
+
