@@ -10,12 +10,12 @@ output:
     highlight: kate
     number_sections: false
 ---
----
 
 
 ```{r setup, include=FALSE}
 library(knitr)
 library(rmdformats)
+# devtools::install_github('charlie86/spotifyr')
 library(spotifyr)
 library(plyr)
 library(tidyverse)

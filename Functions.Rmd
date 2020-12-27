@@ -1,0 +1,29 @@
+---
+title: "Functions For Spotify Analysis"
+author: "Duncan Gates"
+date: "12/25/2020"
+output: html_document
+---
+
+# Functions to Analyze Spotify Data
+
+
+## Enter Spotify Credentials:
+
+```{r}
+
+```
+
+## Enter Genius Credentials:
+
+```{r}
+
+```
+
+
+## Function 1: Making a Table of the Data
+
+```{r}
+
+```
+
