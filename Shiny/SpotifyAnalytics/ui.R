@@ -194,7 +194,20 @@ shinyUI(navbarPage(title = img(src="SpotifyWrapped.png", height = "40px"), id = 
                             
                    ), # Closes the first tabPanel called "Home"
                    
-                   tabPanel("PERSONAL DATA", value = "personal_data"),  # Closes the second tabPanel called "PERSONAL DATA"
+                   tabPanel("PERSONAL DATA", value = "personal_data",
+                            fluidRow(
+                            shinydashboard::box(width = 12, 
+                                                title = HTML("<h1><center><font size=14>Enter Spotify Credentials Here</font></center></h1>"),
+                                  splitLayout(  
+                                    textInput("spotify_client", label = "Enter Spotify Client ID Here", value = "Client ID"),
+                                    textInput("spotify_secret", label = "Enter Spotify Secret ID Here", value = "Secret ID")
+))),
+                            
+                            gt_output(outputId = "table")
+                            
+                            
+                            
+                            ),  # Closes the second tabPanel called "PERSONAL DATA"
                    
                    tabPanel("ARTIST", value = "artist_data"),  # Closes About tab
                    
