@@ -13,6 +13,8 @@ library(tidyverse)
 library(spotifyr)
 library(gt)
 library(lubridate)
+library(rpart)
+library(rpart.plot)
 knitr::opts_chunk$set(echo = F, message = F, warning = F, fig.align = 'center')
 ```
 
@@ -27,8 +29,8 @@ CURRENT IDEA, THREE PARTS, ANALYZE BY ARTIST, PERSONAL DATA, AND ALBUM
 
 ```{r}
 # Insert some shiny code here
-Sys.setenv(SPOTIFY_CLIENT_ID = '493c4e69c0a04333ab08dbc99163f71e') # Ethan's: 493c4e69c0a04333ab08dbc99163f71e, Mine: 383cfac3d8434244a38c4e279a04ce47
-Sys.setenv(SPOTIFY_CLIENT_SECRET = '6da5c07b85ae407896120c3e26800222') # Ethan's: 6da5c07b85ae407896120c3e26800222, Mine: 486c6f539f8e45a2b82f03a30cfed26f
+Sys.setenv(SPOTIFY_CLIENT_ID = '383cfac3d8434244a38c4e279a04ce47') # Ethan's: 493c4e69c0a04333ab08dbc99163f71e, Mine: 383cfac3d8434244a38c4e279a04ce47
+Sys.setenv(SPOTIFY_CLIENT_SECRET = '486c6f539f8e45a2b82f03a30cfed26f') # Ethan's: 6da5c07b85ae407896120c3e26800222, Mine: 486c6f539f8e45a2b82f03a30cfed26f
 ```
 
 ## Enter Genius Credentials:
@@ -498,6 +500,25 @@ genius_get_artists <- function(artist_name, n_results = 10) {
 genius_artists <- genius_get_artists(artist_name = artist) # REWRITE FOR SHINY
 ```
 
+
+## Tree Diagram
+
+```{r}
+track_features <- get_track_audio_features(top50tracks$id1, access_token)
+columns <- dput(colnames(track_features[1:11]))
+track_names <- left_join(track_features, top50tracks, by = c("duration_ms")) %>% 
+  bind_cols(top50tracks$track.name) %>%
+  select(...52, columns) %>%
+  dplyr::rename(track = `...52`) %>%
+  bind_cols(top50tracks$popularity) %>%
+  dplyr::rename(popularity = `...13`)
+
+tree_df <- track_names %>%
+  select(-track)
+
+tree_model <- rpart(popularity ~ ., data = tree_df)
+rpart.plot(tree_model, box.palette = "GnBu")
+```
 
 
 
