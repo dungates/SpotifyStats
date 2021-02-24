@@ -1,0 +1,12 @@
+name: SpotifyAnalytics
+title: SpotifyAnalytics
+username:
+account: dungates
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3476003
+bundleId: 4098925
+url: https://dungates.shinyapps.io/SpotifyAnalytics/
+when: 1610693697.59136
+asMultiple: FALSE
+asStatic: FALSE

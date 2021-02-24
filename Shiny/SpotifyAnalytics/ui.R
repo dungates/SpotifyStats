@@ -6,15 +6,7 @@
 #
 #    http://shiny.rstudio.com/
 #
-# https://nicholasgeorgiou.shinyapps.io/Spotify/
-
-library(dplyr)
-library(stringr)
-library(png)
-library(shinyjs)
-library(DT)
-library(visNetwork)
-library(rintrojs)
+# https://dungates.shinyapps.io/SpotifyAnalytics/
 
 source("carouselPanel.R")
 
@@ -194,22 +186,73 @@ shinyUI(navbarPage(title = img(src="SpotifyWrapped.png", height = "40px"), id = 
                             
                    ), # Closes the first tabPanel called "Home"
                    
-                   tabPanel("PERSONAL DATA", value = "personal_data",
+                   tabPanel("PERSONAL DATA", value = "personal_data", useShinyjs(),
                             fluidRow(
-                            shinydashboard::box(width = 12, 
-                                                title = HTML("<h1><center><font size=14>Enter Spotify Credentials Here</font></center></h1>"),
-                                  splitLayout(  
-                                    textInput("spotify_client", label = "Enter Spotify Client ID Here", value = "Client ID"),
-                                    textInput("spotify_secret", label = "Enter Spotify Secret ID Here", value = "Secret ID")
-))),
+                            shinydashboard::box(id = "personal_box",
+                                                width = 12, 
+                                                title = HTML("<h1><center><font size=14>Click to Allow Spotify Authorization</font></center></h1>"),
+                                                tags$br(),
+                                                column(6, align="center", offset = 3,
+                                                  actionButton(
+                                                    inputId = "spotify_authorize",
+                                                    label = "Authorize",
+                                                    # color = "#1ed760", # spotify color
+                                                    style = "color: #fff; background-color: #1ed760; border-color: #2e6da4"
+                                                    # color = "primary",
+                                                    # style = "fill",
+                                                    # size = "md" # medium size
+                                                    # onclick = "window.open('https://accounts.spotify.com/authorize', '_blank')"
+                                                  ),
+                                                  tags$style(type='text/css', "#button { vertical-align- middle; height- 50px; width- 100%; font-size- 30px;}")
+                                                ),
+                                                tags$br()
+                                                # textOutput("text")
+                                  )),
                             
                             gt_output(outputId = "table")
                             
+                            # conditionalPanel(condition = "exists(top50tracks_gt) == T",
+                            #                  gt_output(outputId = "table"))
                             
                             
                             ),  # Closes the second tabPanel called "PERSONAL DATA"
                    
-                   tabPanel("ARTIST", value = "artist_data"),  # Closes About tab
+                   ## ARTIST DATA STUFF
+                   
+                   tabPanel("ARTIST", value = "artist_data",
+                            material_page(title = "",
+                                          background_color = '#828282',
+                                          tags$head(tags$link(rel = 'icon', type = 'image/png', href = 'green_music_note.png'),
+                                                    tags$title('Sentify')),
+                                          useShinyjs(),
+                                          tags$script(jscode),
+                                          tags$style(appCSS),
+                                          tags$head(tags$link(rel = 'stylesheet', type = 'text/css', href = 'style.css'),
+                                                    tags$head(includeScript('www/ga.js')),
+                                                    tags$head(includeScript('www/hotjar.js'))),
+                                          material_row(
+                                            material_column(
+                                              align = 'center',
+                                              width = 3,
+                                              material_card(
+                                                title = HTML("<h2>Generate a Plot Based on an Artist</h2>"),
+                                                depth = 4,
+                                                material_text_box('artist_search', "Enter an artist's name", color = 'black'),
+                                                  conditionalPanel("input.artist_search !== ''", 
+                                                                    material_dropdown('select_artist', 
+                                                                                      'Choose an artist from these matches on Spotify', 
+                                                                                      '', 
+                                                                                      color = '#1ed760')),
+                                                uiOutput('select_artist_ui')
+                                              )
+                                            ),
+                                            material_column(
+                                              width = 9,
+                                              uiOutput('artist_plot')
+                                            )
+                                          )
+                            )
+                          ),  # Closes About tab
                    
                    tabPanel("ALBUM", value = "album_data")
                    

@@ -8,48 +8,106 @@
 #
 
 library(shiny)
+library(shinymaterial)
+library(shinyWidgets)
+library(shinyjs)
+library(rintrojs)
+library(tidyverse)
+library(highcharter)
+library(png)
+library(DT)
+library(visNetwork)
+library(gt)
+library(spotifyr)
+library(imager)
+library(magick)
+library(scales)
+library(lubridate)
 
-# Define server logic required to draw a histogram
-shinyServer(function(input, output) {
 
-    ## Function to get n number of colours out of your image. (optionally you can specify different colour space)
-    get_colorPal <- function(im, n=1, cs="RGB"){
-        #print(cs) 
-        tmp <-im %>% image_resize("100") %>% 
-            image_quantize(max=n, colorspace=cs) %>%  ## reducing colours! different colorspace gives you different result
-            magick2cimg() %>%  ## I'm converting, becauase I want to use as.data.frame function in imager package.
-            RGBtoHSV() %>% ## i like sorting colour by hue rather than RGB (red green blue)
-            as.data.frame(wide="c") %>%  #3 making it wide makes it easier to output hex colour
-            mutate(hex=hsv(rescale(c.1, from=c(0,360)),c.2,c.3),
-                   hue = c.1,
-                   sat = c.2,
-                   value = c.3) %>%
-            count(hex, hue, sat,value, sort=T) %>% 
-            mutate(colorspace = cs)
-        
-        return(tmp %>% select(colorspace,hex,hue,sat,value,n)) ## I want data frame as a result.
-        
-    }
+
+shinyServer(function(input, output, session) {
     
-    output$distPlot <- renderPlot({
-
-        # generate bins based on input$bins from ui.R
-        x    <- faithful[, 2]
-        bins <- seq(min(x), max(x), length.out = input$bins + 1)
-
-        # draw the histogram with the specified number of bins
-        hist(x, breaks = bins, col = 'darkgray', border = 'white')
-
+    ### MY ACCESS TOKEN
+    spotify_access_token <- reactive({
+        get_spotify_access_token()
     })
     
-    output$value_client <- renderText({ input$spotify_client })
-    output$value_secret <- renderText({ input$spotify_secret })
+    # Checks for presence of code in URL
+    AuthCode <- reactive({
+        ## gets all the parameters in the URL. Your authentication code should be one of them
+        pars <- parseQueryString(session$clientData$url_search)
+        if(length(pars$code) > 0) {
+            return(pars$code)
+        }
+    })
     
-    # Sys.setenv(SPOTIFY_CLIENT_ID = input$spotify_client)
-    # Sys.setenv(SPOTIFY_CLIENT_SECRET = input$spotify_secret)
+    # Creates a token once a code is available
+    AccessToken <- reactive({ 
+        shiny::validate(
+            need(AuthCode(), "Authenticate To See")
+        ) # authenticate necessitate
+        auth_code <- AuthCode()
+        access_token <- ShinyGetToken(code = auth_code)
+        token <- access_token$access_token
+        token
+    })
     
-    top50tracks_gt <- top50tracks %>%
-        select(1:8) %>%
+    # output$text <- renderText({
+    #     paste(AccessToken())
+    # })
+    
+    # Button for spotify authorization
+    observeEvent(req(input$spotify_authorize), {
+        # Do something on click, probably link
+        url <- ShinyGetTokenURL()
+            # "https://accounts.spotify.com/authorize?client_id=383cfac3d8434244a38c4e279a04ce47&response_type=code&redirect_uri=http://127.0.0.1:8100"
+        runjs(paste0("window.location.href='", url, "'")) # Opens new window
+    })
+    
+    observeEvent(input$spotify_authorize, {
+        # Hide button
+        # shinyjs::hide("spotify_authorize")
+        if(exists(AccessToken() == T)){
+            # Hide box
+            shinyjs::hide("personal_box")
+        }
+    })
+    
+    # spotify_authorization_code <- reactive(input$spotify_authorize {
+    #     if(exists(AccessToken() == T)) {
+    #         get_spotify_authorization_code(client_id = "", client_secret = "")
+    #     }
+    # })
+    
+    ### TOP 50 ARTISTS
+    # top50artists <- get_my_top_artists_or_tracks(type = "artists", limit = 50, authorization = AccessToken()) %>% 
+    #     relocate(name, .after = genres) %>% 
+    #     relocate(followers.total, .after = name) %>%
+    #     relocate(c("popularity", "images"), .after = followers.total)
+    
+    ### TABLE OF MOST RECENT FAVORITES CODE
+    top50tracks_gt <- eventReactive(exists(AccessToken()), {
+        # cat("is this working")
+        cat(paste(AuthCode(), "\n"))
+        cat(AccessToken())
+        
+        ### TOP 50 TRACKS
+        top50tracks_gt <- get_my_top_artists_or_tracks(type = "tracks", limit = 50, authorization = AuthCode()) %>%
+        relocate(name, .before = artists) %>%
+        dplyr::rename(track.name = name) %>%
+        relocate(album.name, .after = track.name) %>%
+        unnest(cols = artists, .id = "name") %>%
+        dplyr::rename(artist.name = name) %>%
+        dplyr::relocate(artist.name, .after = track.name) %>%
+        dplyr::group_by(track.name) %>%
+        dplyr::mutate(artists = list(artist.name)) %>%
+        dplyr::ungroup() %>%
+        select(-artist.name) %>%
+        relocate(c("artists", "duration_ms","explicit", "popularity", "album.release_date", "album.images"),
+                 .after = album.name) %>%
+        distinct(track.name, .keep_all = T) %>%# Join images from artists to here for tables?
+        dplyr::select(1:8) %>%
         unnest(cols = album.images) %>%
         dplyr::filter(width == 64) %>% # Could also filter this prior to unnesting, note that height and width is 64 using this, useful for imageR
         select(-width, -height) %>%
@@ -60,7 +118,7 @@ shinyServer(function(input, output) {
                                                   lubridate::seconds(seconds_to_period((`duration_ms`/(1000)))),
                                               duration_ms >= 60000 & duration_ms < 3600000 ~
                                                   ms(seconds_to_period((`duration_ms`/(1000)))),
-                                              duration_ms >= 3600000 ~ 
+                                              duration_ms >= 3600000 ~
                                                   hms(seconds_to_period((`duration_ms`/(1000)))))) %>%
         dplyr::mutate(duration_ms = str_replace(duration_ms, "M ", ":"),
                       duration_ms = str_remove(duration_ms, "S")) %>%
@@ -73,13 +131,59 @@ shinyServer(function(input, output) {
                           B)) %>%
         unite("duration_ms", A:B, sep = ":") %>%
         dplyr::mutate(colors = map(url, ~ dput(get_colorPal(image_read(.)) %>% pull(hex)))) %>%
-        dplyr::mutate(colorss = as.character(colors))
+        dplyr::mutate(colorss = as.character(colors)) %>%
+            gt()
+        top50tracks_gt
+        # colorsss <- as_vector(top50tracks_gt$colorss) # List of colors
+        # cat(colorsss[1])
+    })
     
-    colorsss <- as_vector(top50tracks_gt$colorss) # List of colors
+    top50colors <- eventReactive(exists(AccessToken()), {
+        top50tracks_gt <- get_my_top_artists_or_tracks(type = "tracks", limit = 50, authorization = get_spotify_authorization_code()) %>%
+            relocate(name, .before = artists) %>%
+            dplyr::rename(track.name = name) %>%
+            relocate(album.name, .after = track.name) %>%
+            unnest(cols = artists, .id = "name") %>%
+            dplyr::rename(artist.name = name) %>%
+            dplyr::relocate(artist.name, .after = track.name) %>%
+            dplyr::group_by(track.name) %>%
+            dplyr::mutate(artists = list(artist.name)) %>%
+            dplyr::ungroup() %>%
+            select(-artist.name) %>%
+            relocate(c("artists", "duration_ms","explicit", "popularity", "album.release_date", "album.images"),
+                     .after = album.name) %>%
+            distinct(track.name, .keep_all = T) %>%# Join images from artists to here for tables?
+            dplyr::select(1:8) %>%
+            unnest(cols = album.images) %>%
+            dplyr::filter(width == 64) %>% # Could also filter this prior to unnesting, note that height and width is 64 using this, useful for imageR
+            select(-width, -height) %>%
+            relocate(c("url", "album.name"), .after = artists) %>%
+            mutate(Rank = row_number()) %>%
+            relocate(Rank, .before = track.name) %>%
+            dplyr::mutate(duration_ms = case_when(duration_ms < 60000 ~
+                                                      lubridate::seconds(seconds_to_period((`duration_ms`/(1000)))),
+                                                  duration_ms >= 60000 & duration_ms < 3600000 ~
+                                                      ms(seconds_to_period((`duration_ms`/(1000)))),
+                                                  duration_ms >= 3600000 ~
+                                                      hms(seconds_to_period((`duration_ms`/(1000)))))) %>%
+            dplyr::mutate(duration_ms = str_replace(duration_ms, "M ", ":"),
+                          duration_ms = str_remove(duration_ms, "S")) %>%
+            separate(duration_ms, sep = ":", into = c("A", "B")) %>%
+            mutate(B = as.numeric(B),
+                   B = floor(B),
+                   B = as.character(B),
+                   B = ifelse(str_length(B) == 1,
+                              paste0(0, B),
+                              B)) %>%
+            unite("duration_ms", A:B, sep = ":") %>%
+            dplyr::mutate(colors = map(url, ~ dput(get_colorPal(image_read(.)) %>% pull(hex)))) %>%
+            dplyr::mutate(colorss = as.character(colors))
+        colorsss <- as_vector(top50tracks_gt$colorss) # List of colors
+        colorsss
+    })
     
     output$table <- render_gt(
-        top50tracks_gt %>%
-        gt() %>%
+        top50tracks_gt() %>%
         tab_header(
             title = "Most Played Spotify Tracks",
             subtitle = "Top 50 Most Recent Shown"
@@ -104,7 +208,7 @@ shinyServer(function(input, output) {
             columns = vars(colorss, colors)
         ) %>%
         cols_align(
-            align = "auto",
+            align = "auto"
         ) %>%
         text_transform(
             locations = cells_body(vars(url)),
@@ -120,305 +224,398 @@ shinyServer(function(input, output) {
             column_labels.background.color = "#4486B5"
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[1], alpha = 0.8),
+            style = cell_fill(color = top50colors()[1], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[1]
+                rows = colorss == top50colors()[1]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[2], alpha = 0.8),
+            style = cell_fill(color = top50colors()[2], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[2]
+                rows = colorss == top50colors()[2]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[3], alpha = 0.8),
+            style = cell_fill(color = top50colors()[3], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[3]
+                rows = colorss == top50colors()[3]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[4], alpha = 0.8),
+            style = cell_fill(color = top50colors()[4], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[4]
+                rows = colorss == top50colors()[4]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[5], alpha = 0.8),
+            style = cell_fill(color = top50colors()[5], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[5]
+                rows = colorss == top50colors()[5]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[6], alpha = 0.8),
+            style = cell_fill(color = top50colors()[6], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[6]
+                rows = colorss == top50colors()[6]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[7], alpha = 0.8),
+            style = cell_fill(color = top50colors()[7], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[7]
+                rows = colorss == top50colors()[7]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[8], alpha = 0.8),
+            style = cell_fill(color = top50colors()[8], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[8]
+                rows = colorss == top50colors()[8]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[9], alpha = 0.8),
+            style = cell_fill(color = top50colors()[9], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[9]
+                rows = colorss == top50colors()[9]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[10], alpha = 0.8),
+            style = cell_fill(color = top50colors()[10], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[10]
+                rows = colorss == top50colors()[10]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[11], alpha = 0.8),
+            style = cell_fill(color = top50colors()[11], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[11]
+                rows = colorss == top50colors()[11]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[12], alpha = 0.8),
+            style = cell_fill(color = top50colors()[12], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[12]
+                rows = colorss == top50colors()[12]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[13], alpha = 0.8),
+            style = cell_fill(color = top50colors()[13], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[13]
+                rows = colorss == top50colors()[13]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[14], alpha = 0.8),
+            style = cell_fill(color = top50colors()[14], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[14]
+                rows = colorss == top50colors()[14]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[15], alpha = 0.8),
+            style = cell_fill(color = top50colors()[15], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[15]
+                rows = colorss == top50colors()[15]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[16], alpha = 0.8),
+            style = cell_fill(color = top50colors()[16], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[16]
+                rows = colorss == top50colors()[16]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[17], alpha = 0.8),
+            style = cell_fill(color = top50colors()[17], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[17]
+                rows = colorss == top50colors()[17]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[18], alpha = 0.8),
+            style = cell_fill(color = top50colors()[18], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[18]
+                rows = colorss == top50colors()[18]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[19], alpha = 0.8),
+            style = cell_fill(color = top50colors()[19], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[19]
+                rows = colorss == top50colors()[19]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[20], alpha = 0.8),
+            style = cell_fill(color = top50colors()[20], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[20]
+                rows = colorss == top50colors()[20]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[21], alpha = 0.8),
+            style = cell_fill(color = top50colors()[21], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[21]
+                rows = colorss == top50colors()[21]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[22], alpha = 0.8),
+            style = cell_fill(color = top50colors()[22], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[22]
+                rows = colorss == top50colors()[22]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[23], alpha = 0.8),
+            style = cell_fill(color = top50colors()[23], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[23]
+                rows = colorss == top50colors()[23]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[24], alpha = 0.8),
+            style = cell_fill(color = top50colors()[24], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[24]
+                rows = colorss == top50colors()[24]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[25], alpha = 0.8),
+            style = cell_fill(color = top50colors()[25], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[25]
+                rows = colorss == top50colors()[25]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[26], alpha = 0.8),
+            style = cell_fill(color = top50colors()[26], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[26]
+                rows = colorss == top50colors()[26]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[27], alpha = 0.8),
+            style = cell_fill(color = top50colors()[27], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[27]
+                rows = colorss == top50colors()[27]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[28], alpha = 0.8),
+            style = cell_fill(color = top50colors()[28], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[28]
+                rows = colorss == top50colors()[28]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[29], alpha = 0.8),
+            style = cell_fill(color = top50colors()[29], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[29]
+                rows = colorss == top50colors()[29]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[30], alpha = 0.8),
+            style = cell_fill(color = top50colors()[30], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[30]
+                rows = colorss == top50colors()[30]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[31], alpha = 0.8),
+            style = cell_fill(color = top50colors()[31], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[31]
+                rows = colorss == top50colors()[31]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[32], alpha = 0.8),
+            style = cell_fill(color = top50colors()[32], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[32]
+                rows = colorss == top50colors()[32]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[33], alpha = 0.8),
+            style = cell_fill(color = top50colors()[33], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[33]
+                rows = colorss == top50colors()[33]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[34], alpha = 0.8),
+            style = cell_fill(color = top50colors()[34], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[34]
+                rows = colorss == top50colors()[34]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[35], alpha = 0.8),
+            style = cell_fill(color = top50colors()[35], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[35]
+                rows = colorss == top50colors()[35]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[36], alpha = 0.8),
+            style = cell_fill(color = top50colors()[36], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[36]
+                rows = colorss == top50colors()[36]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[37], alpha = 0.8),
+            style = cell_fill(color = top50colors()[37], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[37]
+                rows = colorss == top50colors()[37]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[38], alpha = 0.8),
+            style = cell_fill(color = top50colors()[38], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[38]
+                rows = colorss == top50colors()[38]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[39], alpha = 0.8),
+            style = cell_fill(color = top50colors()[39], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[39]
+                rows = colorss == top50colors()[39]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[40], alpha = 0.8),
+            style = cell_fill(color = top50colors()[40], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[40]
+                rows = colorss == top50colors()[40]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[41], alpha = 0.8),
+            style = cell_fill(color = top50colors()[41], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[41]
+                rows = colorss == top50colors()[41]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[42], alpha = 0.8),
+            style = cell_fill(color = top50colors()[42], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[42]
+                rows = colorss == top50colors()[42]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[43], alpha = 0.8),
+            style = cell_fill(color = top50colors()[43], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[43]
+                rows = colorss == top50colors()[43]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[44], alpha = 0.8),
+            style = cell_fill(color = top50colors()[44], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[44]
+                rows = colorss == top50colors()[44]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[45], alpha = 0.8),
+            style = cell_fill(color = top50colors()[45], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[45]
+                rows = colorss == top50colors()[45]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[46], alpha = 0.8),
+            style = cell_fill(color = top50colors()[46], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[46]
+                rows = colorss == top50colors()[46]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[47], alpha = 0.8),
+            style = cell_fill(color = top50colors()[47], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[47]
+                rows = colorss == top50colors()[47]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[48], alpha = 0.8),
+            style = cell_fill(color = top50colors()[48], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[48]
+                rows = colorss == top50colors()[48]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[49], alpha = 0.8),
+            style = cell_fill(color = top50colors()[49], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[49]
+                rows = colorss == top50colors()[49]
             )
         ) %>%
         tab_style(
-            style = cell_fill(color = colorsss[50], alpha = 0.8),
+            style = cell_fill(color = top50colors()[50], alpha = 0.8),
             locations = cells_body(
-                rows = colorss == colorsss[50]
+                rows = colorss == top50colors()[50]
             )
         )
     )
+    
+    
+    ###### ARTIST CODE
+    artist_info <- reactive({
+        req(input$artist_search != '')
+        search_spotify(input$artist_search, 'artist', authorization = spotify_access_token()) %>% 
+            filter(!duplicated(name))
+    })
+    
+    observeEvent(input$artist_search, {
+        choices <- artist_info()$name
+        names(choices) <- choices
+        update_material_dropdown(session, 'select_artist', value = artist_info()$name[1], choices = choices)
+    })
+    
+    output$select_artist_ui <- renderUI({
+        req(nrow(artist_info()) > 0)
+        tagList(
+            htmlOutput('artist_img'),
+            withBusyIndicatorUI(
+                actionButton('tracks_go', 'Generate plot', class = 'btn-primary')
+            ),
+            material_switch('artist_autoplay', 'Play song preview on hover', color = '#1ed760'),
+            br(),
+            uiOutput('artist_chart_song_ui')
+        )
+    })
+    
+    selected_artist <- reactive({
+        req(nrow(artist_info()) > 0)
+        artist_info() %>% 
+            filter(name == input$select_artist) %>% 
+            filter(popularity == max(popularity))
+    })
+    
+    observeEvent(input$select_artist, {
+        
+        req(nrow(artist_info()) > 0)
+        
+        artist_img <- ifelse(!is.na(selected_artist()$images[[1]]$url[1]), selected_artist()$images[[1]]$url[1], 'https://pbs.twimg.com/profile_images/509949472139669504/IQSh7By1_400x400.jpeg')
+        
+        output$artist_img <- renderText({
+            HTML(str_glue('<img src={artist_img} height="200">'))
+        })
+        
+    })
+    
+    artist_audio_features <- eventReactive(input$tracks_go, {
+        df <- get_artist_audio_features(selected_artist()$name, authorization = spotify_access_token()) %>% 
+            mutate(album_img = map_chr(1:nrow(.), function(row) {
+                .$album_images[[row]]$url[1]
+            }))
+        if (nrow(df) == 0) {
+            stop("Sorry, couldn't find any tracks for that artist's albums on Spotify.")
+        }
+        return(df)
+    })
+    
+    output$artist_quadrant_chart <- renderHighchart({
+        artist_quadrant_chart(artist_audio_features()) %>% 
+            hc_add_event_point(event = 'mouseOver')
+    })
+    
+    output$artist_chart_song_ui <- renderUI({
+        
+        req(input$artist_quadrant_chart_mouseOver, input$artist_autoplay == TRUE)
+        
+        artist_track_hover <- input$artist_quadrant_chart_mouseOver
+        track_preview_url <- artist_audio_features() %>% filter(
+            album_name == artist_track_hover$series,
+            valence == artist_track_hover$x,
+            energy == artist_track_hover$y
+        ) %>% pull(track_preview_url)
+        
+        if (!is.na(track_preview_url)) {
+            tagList(
+                tags$audio(id = 'song_preview', src = track_preview_url, type = 'audio/mp3', autoplay = NA, controls = NA),
+                tags$script(JS("myAudio=document.getElementById('song_preview'); myAudio.play();"))
+            )
+        } else {
+            h5('No preview for this track on Spotify')
+        }
+    })
+    
+    observeEvent(input$tracks_go, {
+        output$artist_plot <- renderUI({
+            if (input$GetScreenWidth >= 800) {
+                withSpinner(highchartOutput('artist_quadrant_chart', width = '820px', height = '800px'), type = 5, color = '#1ed760')
+            } else {
+                withSpinner(highchartOutput('artist_quadrant_chart'), type = 5, color = '#1ed760')
+            }
+        })
+    })
 
 })
